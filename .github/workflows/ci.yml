@@ -14,7 +14,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        rust-version: ['1.70', '1.75', 'stable']
+        rust-version: ['1.75', 'stable']
+        redis-mode: ['standalone', 'cluster']
 
     services:
       redis:
@@ -24,7 +25,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -33,16 +34,57 @@ jobs:
           components: rustfmt, clippy
 
       - name: Cache Cargo registry
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ matrix.rust-version }}-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ matrix.rust-version }}-${{ matrix.redis-mode }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
+            ${{ runner.os }}-cargo-${{ matrix.rust-version }}-${{ matrix.redis-mode }}-
             ${{ runner.os }}-cargo-${{ matrix.rust-version }}-
             ${{ runner.os }}-cargo-
+
+      - name: Setup Redis Cluster
+        if: matrix.redis-mode == 'cluster'
+        run: |
+          # Install redis-cli for cluster setup
+          sudo apt-get update
+          sudo apt-get install -y redis-tools
+          
+          # Create Redis cluster configuration
+          mkdir -p /tmp/redis-cluster
+          for port in 7000 7001 7002 7003 7004 7005; do
+            mkdir -p /tmp/redis-cluster/$port
+            cat > /tmp/redis-cluster/$port/redis.conf << EOF
+          port $port
+          cluster-enabled yes
+          cluster-config-file nodes-$port.conf
+          cluster-node-timeout 5000
+          appendonly yes
+          bind 0.0.0.0
+          protected-mode no
+          EOF
+          done
+          
+          # Start Redis cluster nodes
+          for port in 7000 7001 7002 7003 7004 7005; do
+            redis-server /tmp/redis-cluster/$port/redis.conf --daemonize yes --dir /tmp/redis-cluster/$port/
+          done
+          
+          # Wait for nodes to start
+          sleep 5
+          
+          # Create cluster
+          echo "yes" | redis-cli --cluster create \
+            127.0.0.1:7000 127.0.0.1:7001 127.0.0.1:7002 \
+            127.0.0.1:7003 127.0.0.1:7004 127.0.0.1:7005 \
+            --cluster-replicas 1
+          
+          # Verify cluster status
+          redis-cli -p 7000 cluster info
+          redis-cli -p 7000 cluster nodes
 
       - name: Check formatting
         run: cargo fmt -- --check
@@ -53,35 +95,61 @@ jobs:
       - name: Build
         run: cargo build --verbose
 
+      - name: Run security audit
+        run: |
+          cargo install cargo-audit
+          cargo audit
+
       - name: Run tests
         run: cargo test --verbose
 
-      - name: Generate coverage report
+      - name: Run Redis standalone integration tests
+        if: matrix.redis-mode == 'standalone'
         run: |
-          cargo install cargo-tarpaulin
-          cargo tarpaulin --out xml --output-dir ./coverage
+          # Set environment variable to indicate Redis is available
+          export REDIS_AVAILABLE=true
+          export REDIS_URL=redis://127.0.0.1:6379
+          cargo test test_watcher --verbose -- --ignored
+          cargo test test_redis_watcher_integration --verbose -- --ignored
+          cargo test test_watcher_ignore_self --verbose -- --ignored
+
+      - name: Run Redis cluster integration tests
+        if: matrix.redis-mode == 'cluster'
+        run: |
+          # Set environment variable to indicate Redis cluster is available
+          export REDIS_CLUSTER_AVAILABLE=true
+          export REDIS_CLUSTER_URLS=127.0.0.1:7000,127.0.0.1:7001,127.0.0.1:7002
+          cargo test test_redis_cluster_watcher --verbose -- --ignored
+          cargo test test_cluster_failover --verbose -- --ignored
+
+      - name: Generate coverage report
+        if: matrix.rust-version == 'stable'
+        run: |
+          cargo install cargo-llvm-cov
+          cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v3
+        if: matrix.rust-version == 'stable'
+        uses: codecov/codecov-action@v4
         with:
-          file: ./coverage/cobertura.xml
-          fail_ci_if_error: true
+          file: lcov.info
+          fail_ci_if_error: false
 
   semantic-release:
     needs: [test]
-    if: github.repository == 'casbin/casbin-redis-watcher' && github.event_name == 'push'
+    if: github.repository == 'casbin-rs/redis-watcher' && github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Install Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
-          node-version: '18.x'
+          node-version: '20.x'
 
       - name: Install semantic-release
-        run: npm install --save-dev semantic-release@21.0.0
+        run: npm install --save-dev semantic-release@24.0.0
 
       - name: Run semantic-release
         run: npx semantic-release

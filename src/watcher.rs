@@ -1,19 +1,34 @@
+// Copyright 2025 The Casbin Authors. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 use async_trait::async_trait;
-use casbin::{Enforcer, CoreApi, MgmtApi};
+use casbin::{CoreApi, Enforcer, MgmtApi};
+use redis::{
+    cluster::{ClusterClient, ClusterClientBuilder},
+    cluster_async::ClusterConnection,
+    AsyncCommands, Client, ProtocolVersion, PushInfo,
+};
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use thiserror::Error;
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tokio_stream::StreamExt;
-use redis::{
-    Client, 
-    cluster::{ClusterClient, ClusterClientBuilder}, 
-    cluster_async::ClusterConnection,
-    AsyncCommands,
-    ProtocolVersion,
-    PushInfo
-};
-use serde::{Deserialize, Serialize};
-use thiserror::Error;
+
+// Type aliases to reduce complexity
+type UpdateCallback = Box<dyn Fn(&str) + Send + Sync>;
+type CallbackArc = Arc<RwLock<Option<UpdateCallback>>>;
 
 // ========== Error Types ==========
 
@@ -131,7 +146,9 @@ impl Message {
 // ========== Default Update Callback ==========
 
 /// Default update callback that works with Casbin enforcer wrapped in Arc<Mutex<>>
-pub fn default_update_callback(enforcer: Arc<Mutex<Enforcer>>) -> impl Fn(&str) + Send + Sync + 'static {
+pub fn default_update_callback(
+    enforcer: Arc<Mutex<Enforcer>>,
+) -> impl Fn(&str) + Send + Sync + 'static {
     move |msg: &str| {
         let message = match Message::from_json(msg) {
             Ok(msg) => msg,
@@ -149,38 +166,56 @@ pub fn default_update_callback(enforcer: Arc<Mutex<Enforcer>>) -> impl Fn(&str) 
                     guard.load_policy().await.map(|_| true)
                 }
                 UpdateType::UpdateForAddPolicy => {
-                    guard.add_named_policy(&message.ptype, message.new_rule).await
+                    guard
+                        .add_named_policy(&message.ptype, message.new_rule)
+                        .await
                 }
                 UpdateType::UpdateForAddPolicies => {
-                    guard.add_named_policies(&message.ptype, message.new_rules).await
+                    guard
+                        .add_named_policies(&message.ptype, message.new_rules)
+                        .await
                 }
                 UpdateType::UpdateForRemovePolicy => {
-                    guard.remove_named_policy(&message.ptype, message.new_rule).await
+                    guard
+                        .remove_named_policy(&message.ptype, message.new_rule)
+                        .await
                 }
                 UpdateType::UpdateForRemovePolicies => {
-                    guard.remove_named_policies(&message.ptype, message.new_rules).await
+                    guard
+                        .remove_named_policies(&message.ptype, message.new_rules)
+                        .await
                 }
                 UpdateType::UpdateForRemoveFilteredPolicy => {
-                    guard.remove_filtered_named_policy(
-                        &message.ptype, 
-                        message.field_index as usize, 
-                        message.field_values
-                    ).await
+                    guard
+                        .remove_filtered_named_policy(
+                            &message.ptype,
+                            message.field_index as usize,
+                            message.field_values,
+                        )
+                        .await
                 }
                 UpdateType::UpdateForUpdatePolicy => {
                     // Update policy is not available in current Casbin-rs, simulate with remove + add
-                    let remove_result = guard.remove_named_policy(&message.ptype, message.old_rule).await;
+                    let remove_result = guard
+                        .remove_named_policy(&message.ptype, message.old_rule)
+                        .await;
                     if remove_result.unwrap_or(false) {
-                        guard.add_named_policy(&message.ptype, message.new_rule).await
+                        guard
+                            .add_named_policy(&message.ptype, message.new_rule)
+                            .await
                     } else {
                         Ok(false)
                     }
                 }
                 UpdateType::UpdateForUpdatePolicies => {
                     // Update policies is not available in current Casbin-rs, simulate with remove + add
-                    let remove_result = guard.remove_named_policies(&message.ptype, message.old_rules).await;
+                    let remove_result = guard
+                        .remove_named_policies(&message.ptype, message.old_rules)
+                        .await;
                     if remove_result.unwrap_or(false) {
-                        guard.add_named_policies(&message.ptype, message.new_rules).await
+                        guard
+                            .add_named_policies(&message.ptype, message.new_rules)
+                            .await
                     } else {
                         Ok(false)
                     }
@@ -214,27 +249,27 @@ pub trait Watcher: Send + Sync {
 
     /// Update for add policy
     async fn update_for_add_policy(
-        &self, 
-        sec: &str, 
-        ptype: &str, 
-        params: Vec<String>
+        &self,
+        sec: &str,
+        ptype: &str,
+        params: Vec<String>,
     ) -> Result<()>;
 
     /// Update for remove policy  
     async fn update_for_remove_policy(
-        &self, 
-        sec: &str, 
-        ptype: &str, 
-        params: Vec<String>
+        &self,
+        sec: &str,
+        ptype: &str,
+        params: Vec<String>,
     ) -> Result<()>;
 
     /// Update for remove filtered policy
     async fn update_for_remove_filtered_policy(
         &self,
         sec: &str,
-        ptype: &str, 
+        ptype: &str,
         field_index: i32,
-        field_values: Vec<String>
+        field_values: Vec<String>,
     ) -> Result<()>;
 
     /// Update for save policy
@@ -244,8 +279,8 @@ pub trait Watcher: Send + Sync {
     async fn update_for_add_policies(
         &self,
         sec: &str,
-        ptype: &str,  
-        rules: Vec<Vec<String>>
+        ptype: &str,
+        rules: Vec<Vec<String>>,
     ) -> Result<()>;
 
     /// Update for remove policies (batch)
@@ -253,7 +288,7 @@ pub trait Watcher: Send + Sync {
         &self,
         sec: &str,
         ptype: &str,
-        rules: Vec<Vec<String>>
+        rules: Vec<Vec<String>>,
     ) -> Result<()>;
 
     /// Update for update policy
@@ -262,16 +297,16 @@ pub trait Watcher: Send + Sync {
         sec: &str,
         ptype: &str,
         old_rule: Vec<String>,
-        new_rule: Vec<String>
+        new_rule: Vec<String>,
     ) -> Result<()>;
 
     /// Update for update policies (batch)
     async fn update_for_update_policies(
         &self,
-        sec: &str, 
+        sec: &str,
         ptype: &str,
         old_rules: Vec<Vec<String>>,
-        new_rules: Vec<Vec<String>>
+        new_rules: Vec<Vec<String>>,
     ) -> Result<()>;
 
     /// Close the watcher
@@ -287,7 +322,7 @@ pub struct RedisWatcher {
     cluster_connection: Arc<Mutex<Option<ClusterConnection>>>,
     push_receiver: Arc<Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<PushInfo>>>>,
     options: crate::WatcherOptions,
-    callback: Arc<RwLock<Option<Box<dyn Fn(&str) + Send + Sync>>>>,
+    callback: CallbackArc,
     subscription_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
     is_closed: Arc<RwLock<bool>>,
 }
@@ -296,11 +331,11 @@ impl RedisWatcher {
     /// Create a new Redis watcher for standalone Redis
     pub async fn new(redis_url: &str, options: crate::WatcherOptions) -> Result<Self> {
         let client = Arc::new(Client::open(redis_url)?);
-        
+
         // Test connection
         let mut conn = client.get_multiplexed_async_connection().await?;
         let _: String = redis::cmd("PING").query_async(&mut conn).await?;
-        
+
         let watcher = Self {
             sub_client: Some(client.clone()),
             pub_client: Some(client),
@@ -317,18 +352,21 @@ impl RedisWatcher {
     }
 
     /// Create a new Redis watcher for Redis cluster
-    pub async fn new_with_cluster(cluster_urls: &str, options: crate::WatcherOptions) -> Result<Self> {
+    pub async fn new_with_cluster(
+        cluster_urls: &str,
+        options: crate::WatcherOptions,
+    ) -> Result<Self> {
         let urls: Vec<&str> = cluster_urls.split(',').collect();
-        
+
         // Create push channel for receiving pubsub messages
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        
+
         // Build cluster client with RESP3 protocol and push sender for pubsub support
         let cluster_client = Arc::new(
             ClusterClientBuilder::new(urls)
                 .use_protocol(ProtocolVersion::RESP3)
                 .push_sender(tx)
-                .build()?
+                .build()?,
         );
 
         // Test connection
@@ -337,7 +375,7 @@ impl RedisWatcher {
 
         let watcher = Self {
             sub_client: None,
-            pub_client: None,  
+            pub_client: None,
             cluster_client: Some(cluster_client),
             cluster_connection: Arc::new(Mutex::new(Some(conn))),
             push_receiver: Arc::new(Mutex::new(Some(rx))),
@@ -356,7 +394,7 @@ impl RedisWatcher {
         }
 
         let payload = message.to_json()?;
-        
+
         if let Some(client) = &self.pub_client {
             let mut conn = client.get_multiplexed_async_connection().await?;
             let _: i32 = conn.publish(&self.options.channel, payload).await?;
@@ -364,7 +402,9 @@ impl RedisWatcher {
             let mut conn = cluster_client.get_async_connection().await?;
             let _: i32 = conn.publish(&self.options.channel, payload).await?;
         } else {
-            return Err(WatcherError::Configuration("No publish client available".to_string()));
+            return Err(WatcherError::Configuration(
+                "No publish client available".to_string(),
+            ));
         }
 
         Ok(())
@@ -381,14 +421,21 @@ impl RedisWatcher {
         let local_id = self.options.local_id.clone();
         let ignore_self = self.options.ignore_self;
         let is_closed = self.is_closed.clone();
-        
+
         let handle = if let Some(client) = &self.sub_client {
             // Standalone Redis pubsub
             let client = client.clone();
             tokio::spawn(async move {
                 if let Err(e) = Self::standalone_subscription_loop(
-                    client, channel, callback, local_id, ignore_self, is_closed
-                ).await {
+                    client,
+                    channel,
+                    callback,
+                    local_id,
+                    ignore_self,
+                    is_closed,
+                )
+                .await
+                {
                     log::error!("Standalone subscription loop error: {}", e);
                 }
             })
@@ -398,13 +445,23 @@ impl RedisWatcher {
             let cluster_connection = self.cluster_connection.clone();
             tokio::spawn(async move {
                 if let Err(e) = Self::cluster_subscription_loop(
-                    cluster_connection, push_receiver, channel, callback, local_id, ignore_self, is_closed
-                ).await {
+                    cluster_connection,
+                    push_receiver,
+                    channel,
+                    callback,
+                    local_id,
+                    ignore_self,
+                    is_closed,
+                )
+                .await
+                {
                     log::error!("Cluster subscription loop error: {}", e);
                 }
             })
         } else {
-            return Err(WatcherError::Configuration("No subscription client available".to_string()));
+            return Err(WatcherError::Configuration(
+                "No subscription client available".to_string(),
+            ));
         };
 
         *self.subscription_handle.lock().await = Some(handle);
@@ -414,16 +471,16 @@ impl RedisWatcher {
     async fn standalone_subscription_loop(
         client: Arc<Client>,
         channel: String,
-        callback: Arc<RwLock<Option<Box<dyn Fn(&str) + Send + Sync>>>>,
+        callback: CallbackArc,
         local_id: String,
         ignore_self: bool,
         is_closed: Arc<RwLock<bool>>,
     ) -> Result<()> {
         let mut pubsub = client.get_async_pubsub().await?;
         pubsub.subscribe(&channel).await?;
-        
+
         let mut stream = pubsub.on_message();
-        
+
         while let Some(msg) = stream.next().await {
             if *is_closed.read().await {
                 break;
@@ -436,12 +493,12 @@ impl RedisWatcher {
                     continue;
                 }
             };
-            
+
             // Handle close message
             if payload == "Close" {
                 break;
             }
-            
+
             match Message::from_json(&payload) {
                 Ok(message) => {
                     let is_self = message.id == local_id;
@@ -450,21 +507,21 @@ impl RedisWatcher {
                             cb(&payload);
                         }
                     }
-                },
+                }
                 Err(e) => {
                     log::error!("Failed to parse message: {} with error: {}", payload, e);
                 }
             }
         }
-        
+
         Ok(())
     }
-    
+
     async fn cluster_subscription_loop(
         cluster_connection: Arc<Mutex<Option<ClusterConnection>>>,
         push_receiver: Arc<Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<PushInfo>>>>,
         channel: String,
-        callback: Arc<RwLock<Option<Box<dyn Fn(&str) + Send + Sync>>>>,
+        callback: CallbackArc,
         local_id: String,
         ignore_self: bool,
         is_closed: Arc<RwLock<bool>>,
@@ -475,10 +532,12 @@ impl RedisWatcher {
             if let Some(ref mut conn) = *conn_guard {
                 let _: () = conn.subscribe(&channel).await?;
             } else {
-                return Err(WatcherError::Configuration("Cluster connection not available".to_string()));
+                return Err(WatcherError::Configuration(
+                    "Cluster connection not available".to_string(),
+                ));
             }
         }
-        
+
         // Listen for push messages
         let mut receiver_guard = push_receiver.lock().await;
         if let Some(ref mut rx) = *receiver_guard {
@@ -486,40 +545,43 @@ impl RedisWatcher {
                 if *is_closed.read().await {
                     break;
                 }
-                
+
                 // Process pubsub messages
-                match push_info.kind {
-                    redis::PushKind::Message => {
-                        if let Some(redis::Value::BulkString(data)) = push_info.data.get(2) {
-                            let payload = String::from_utf8_lossy(data);
-                            
-                            // Handle close message
-                            if payload == "Close" {
-                                break;
-                            }
-                            
-                            match Message::from_json(&payload) {
-                                Ok(message) => {
-                                    let is_self = message.id == local_id;
-                                    if !(ignore_self && is_self) {
-                                        if let Some(cb) = callback.read().await.as_ref() {
-                                            cb(&payload);
-                                        }
+                if push_info.kind == redis::PushKind::Message {
+                    if let Some(redis::Value::BulkString(data)) = push_info.data.get(2) {
+                        let payload = String::from_utf8_lossy(data);
+
+                        // Handle close message
+                        if payload == "Close" {
+                            break;
+                        }
+
+                        match Message::from_json(&payload) {
+                            Ok(message) => {
+                                let is_self = message.id == local_id;
+                                if !(ignore_self && is_self) {
+                                    if let Some(cb) = callback.read().await.as_ref() {
+                                        cb(&payload);
                                     }
-                                },
-                                Err(e) => {
-                                    log::error!("Failed to parse message: {} with error: {}", payload, e);
                                 }
                             }
+                            Err(e) => {
+                                log::error!(
+                                    "Failed to parse message: {} with error: {}",
+                                    payload,
+                                    e
+                                );
+                            }
                         }
-                    },
-                    _ => {} // Ignore other push types
+                    }
                 }
             }
         } else {
-            return Err(WatcherError::Configuration("Push receiver not available".to_string()));
+            return Err(WatcherError::Configuration(
+                "Push receiver not available".to_string(),
+            ));
         }
-        
+
         Ok(())
     }
 }
@@ -540,16 +602,32 @@ impl Watcher for RedisWatcher {
         self.publish_message(&message).await
     }
 
-    async fn update_for_add_policy(&self, sec: &str, ptype: &str, params: Vec<String>) -> Result<()> {
-        let mut message = Message::new(UpdateType::UpdateForAddPolicy, self.options.local_id.clone());
+    async fn update_for_add_policy(
+        &self,
+        sec: &str,
+        ptype: &str,
+        params: Vec<String>,
+    ) -> Result<()> {
+        let mut message = Message::new(
+            UpdateType::UpdateForAddPolicy,
+            self.options.local_id.clone(),
+        );
         message.sec = sec.to_string();
         message.ptype = ptype.to_string();
         message.new_rule = params;
         self.publish_message(&message).await
     }
 
-    async fn update_for_remove_policy(&self, sec: &str, ptype: &str, params: Vec<String>) -> Result<()> {
-        let mut message = Message::new(UpdateType::UpdateForRemovePolicy, self.options.local_id.clone());
+    async fn update_for_remove_policy(
+        &self,
+        sec: &str,
+        ptype: &str,
+        params: Vec<String>,
+    ) -> Result<()> {
+        let mut message = Message::new(
+            UpdateType::UpdateForRemovePolicy,
+            self.options.local_id.clone(),
+        );
         message.sec = sec.to_string();
         message.ptype = ptype.to_string();
         message.new_rule = params;
@@ -561,9 +639,12 @@ impl Watcher for RedisWatcher {
         sec: &str,
         ptype: &str,
         field_index: i32,
-        field_values: Vec<String>
+        field_values: Vec<String>,
     ) -> Result<()> {
-        let mut message = Message::new(UpdateType::UpdateForRemoveFilteredPolicy, self.options.local_id.clone());
+        let mut message = Message::new(
+            UpdateType::UpdateForRemoveFilteredPolicy,
+            self.options.local_id.clone(),
+        );
         message.sec = sec.to_string();
         message.ptype = ptype.to_string();
         message.field_index = field_index;
@@ -572,20 +653,39 @@ impl Watcher for RedisWatcher {
     }
 
     async fn update_for_save_policy(&self) -> Result<()> {
-        let message = Message::new(UpdateType::UpdateForSavePolicy, self.options.local_id.clone());
+        let message = Message::new(
+            UpdateType::UpdateForSavePolicy,
+            self.options.local_id.clone(),
+        );
         self.publish_message(&message).await
     }
 
-    async fn update_for_add_policies(&self, sec: &str, ptype: &str, rules: Vec<Vec<String>>) -> Result<()> {
-        let mut message = Message::new(UpdateType::UpdateForAddPolicies, self.options.local_id.clone());
+    async fn update_for_add_policies(
+        &self,
+        sec: &str,
+        ptype: &str,
+        rules: Vec<Vec<String>>,
+    ) -> Result<()> {
+        let mut message = Message::new(
+            UpdateType::UpdateForAddPolicies,
+            self.options.local_id.clone(),
+        );
         message.sec = sec.to_string();
         message.ptype = ptype.to_string();
         message.new_rules = rules;
         self.publish_message(&message).await
     }
 
-    async fn update_for_remove_policies(&self, sec: &str, ptype: &str, rules: Vec<Vec<String>>) -> Result<()> {
-        let mut message = Message::new(UpdateType::UpdateForRemovePolicies, self.options.local_id.clone());
+    async fn update_for_remove_policies(
+        &self,
+        sec: &str,
+        ptype: &str,
+        rules: Vec<Vec<String>>,
+    ) -> Result<()> {
+        let mut message = Message::new(
+            UpdateType::UpdateForRemovePolicies,
+            self.options.local_id.clone(),
+        );
         message.sec = sec.to_string();
         message.ptype = ptype.to_string();
         message.new_rules = rules;
@@ -597,9 +697,12 @@ impl Watcher for RedisWatcher {
         sec: &str,
         ptype: &str,
         old_rule: Vec<String>,
-        new_rule: Vec<String>
+        new_rule: Vec<String>,
     ) -> Result<()> {
-        let mut message = Message::new(UpdateType::UpdateForUpdatePolicy, self.options.local_id.clone());
+        let mut message = Message::new(
+            UpdateType::UpdateForUpdatePolicy,
+            self.options.local_id.clone(),
+        );
         message.sec = sec.to_string();
         message.ptype = ptype.to_string();
         message.old_rule = old_rule;
@@ -612,9 +715,12 @@ impl Watcher for RedisWatcher {
         sec: &str,
         ptype: &str,
         old_rules: Vec<Vec<String>>,
-        new_rules: Vec<Vec<String>>
+        new_rules: Vec<Vec<String>>,
     ) -> Result<()> {
-        let mut message = Message::new(UpdateType::UpdateForUpdatePolicies, self.options.local_id.clone());
+        let mut message = Message::new(
+            UpdateType::UpdateForUpdatePolicies,
+            self.options.local_id.clone(),
+        );
         message.sec = sec.to_string();
         message.ptype = ptype.to_string();
         message.old_rules = old_rules;
@@ -624,7 +730,7 @@ impl Watcher for RedisWatcher {
 
     async fn close(&mut self) -> Result<()> {
         *self.is_closed.write().await = true;
-        
+
         // Send close message
         if let Some(client) = &self.pub_client {
             let mut conn = client.get_multiplexed_async_connection().await?;
@@ -633,12 +739,12 @@ impl Watcher for RedisWatcher {
             let mut conn = cluster_client.get_async_connection().await?;
             let _: i32 = conn.publish(&self.options.channel, "Close").await?;
         }
-        
+
         // Wait for subscription task to finish
         if let Some(handle) = self.subscription_handle.lock().await.take() {
             handle.abort();
         }
-        
+
         Ok(())
     }
 }
