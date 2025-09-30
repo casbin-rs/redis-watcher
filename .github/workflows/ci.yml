@@ -1,4 +1,4 @@
-name: Rust
+name: CI
 
 on:
   push:
@@ -9,19 +9,26 @@ on:
       - master
 
 jobs:
-  test:
+  test-linux:
+    name: Test Suite (Linux with Redis)
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        rust-version: ['1.75', 'stable']
+        rust-version: ['1.82', 'stable']
         redis-mode: ['standalone', 'cluster']
 
     services:
+      # Redis service is only available on Linux runners
       redis:
         image: redis
         ports:
           - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
 
     steps:
       - name: Checkout code
@@ -37,21 +44,21 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ matrix.rust-version }}-${{ matrix.redis-mode }}-${{ hashFiles('**/Cargo.lock') }}
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ matrix.rust-version }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-${{ matrix.rust-version }}-${{ matrix.redis-mode }}-
             ${{ runner.os }}-cargo-${{ matrix.rust-version }}-
             ${{ runner.os }}-cargo-
 
       - name: Setup Redis Cluster
         if: matrix.redis-mode == 'cluster'
         run: |
-          # Install redis-cli for cluster setup
+          # Install redis-server and redis-cli for cluster setup
           sudo apt-get update
-          sudo apt-get install -y redis-tools
+          sudo apt-get install -y redis-server redis-tools
           
           # Create Redis cluster configuration
           mkdir -p /tmp/redis-cluster
@@ -74,7 +81,7 @@ jobs:
           done
           
           # Wait for nodes to start
-          sleep 5
+          sleep 10
           
           # Create cluster
           echo "yes" | redis-cli --cluster create \
@@ -93,15 +100,16 @@ jobs:
         run: cargo clippy -- -D warnings
 
       - name: Build
-        run: cargo build --verbose
+        run: cargo build --verbose --all-features
 
       - name: Run security audit
+        if: matrix.rust-version == 'stable'
         run: |
           cargo install cargo-audit
           cargo audit
 
-      - name: Run tests
-        run: cargo test --verbose
+      - name: Run unit tests
+        run: cargo test --verbose --lib
 
       - name: Run Redis standalone integration tests
         if: matrix.redis-mode == 'standalone'
@@ -122,36 +130,49 @@ jobs:
           cargo test test_redis_cluster_watcher --verbose -- --ignored
           cargo test test_cluster_failover --verbose -- --ignored
 
-      - name: Generate coverage report
-        if: matrix.rust-version == 'stable'
-        run: |
-          cargo install cargo-llvm-cov
-          cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
+  test-cross-platform:
+    name: Cross-platform Test Suite
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macOS-latest]
+        rust-version: ['1.82', 'stable']
 
-      - name: Upload coverage to Codecov
-        if: matrix.rust-version == 'stable'
-        uses: codecov/codecov-action@v4
-        with:
-          file: lcov.info
-          fail_ci_if_error: false
-
-  semantic-release:
-    needs: [test]
-    if: github.repository == 'casbin-rs/redis-watcher' && github.event_name == 'push'
-    runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install Node.js
-        uses: actions/setup-node@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
-          node-version: '20.x'
+          toolchain: ${{ matrix.rust-version }}
+          components: rustfmt, clippy
 
-      - name: Install semantic-release
-        run: npm install --save-dev semantic-release@24.0.0
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ matrix.rust-version }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ matrix.rust-version }}-
+            ${{ runner.os }}-cargo-
 
-      - name: Run semantic-release
-        run: npx semantic-release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Check formatting
+        run: cargo fmt -- --check
+
+      - name: Run clippy
+        run: cargo clippy -- -D warnings
+
+      - name: Build
+        run: cargo build --verbose --all-features
+
+      - name: Run unit tests
+        run: cargo test --verbose --lib
+
+  # Semantic release is handled by the release.yml workflow when tags are pushed
+  # This section has been removed to avoid conflicts with the simplified release process

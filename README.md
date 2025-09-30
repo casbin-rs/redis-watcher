@@ -1,6 +1,8 @@
 Redis Watcher
 ---
 
+[![Crates.io](https://img.shields.io/crates/v/redis-watcher.svg)](https://crates.io/crates/redis-watcher)
+[![Docs](https://docs.rs/redis-watcher/badge.svg)](https://docs.rs/redis-watcher)
 [![Build Status](https://github.com/casbin-rs/redis-watcher/actions/workflows/ci.yml/badge.svg)](https://github.com/casbin-rs/redis-watcher/actions/workflows/ci.yml)
 [![Codecov](https://codecov.io/gh/casbin-rs/redis-watcher/branch/master/graph/badge.svg)](https://codecov.io/gh/casbin-rs/redis-watcher)
 
@@ -13,7 +15,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-casbin-redis-watcher = "0.1"
+redis-watcher = "0.1"
 casbin = "2.2"
 tokio = { version = "1.0", features = ["full"] }
 redis = { version = "0.32", features = ["tokio-comp", "aio"] }
@@ -22,7 +24,7 @@ redis = { version = "0.32", features = ["tokio-comp", "aio"] }
 ## Simple Example
 
 ```rust
-use casbin_redis_watcher::{RedisWatcher, WatcherOptions, Watcher};
+use redis_watcher::{RedisWatcher, WatcherOptions, Watcher};
 use casbin::{prelude::*, Result as CasbinResult};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -32,7 +34,7 @@ fn update_callback(msg: &str) {
 }
 
 #[tokio::main]
-async fn main() -> casbin_redis_watcher::Result<()> {
+async fn main() -> redis_watcher::Result<()> {
     // Initialize the watcher.
     // Use the Redis URL as parameter.
     let options = WatcherOptions::default()
@@ -58,7 +60,7 @@ async fn main() -> casbin_redis_watcher::Result<()> {
     watcher.set_update_callback(update_callback).await?;
     
     // Or use the default callback
-    // let callback = casbin_redis_watcher::default_update_callback(enforcer.clone());
+    // let callback = redis_watcher::default_update_callback(enforcer.clone());
     // watcher.set_update_callback(move |msg| callback(msg)).await?;
 
     // Start subscription
@@ -82,13 +84,13 @@ async fn main() -> casbin_redis_watcher::Result<()> {
 ## Cluster Example
 
 ```rust
-use casbin_redis_watcher::{RedisWatcher, WatcherOptions, Watcher};
+use redis_watcher::{RedisWatcher, WatcherOptions, Watcher};
 use casbin::prelude::*;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 #[tokio::main]
-async fn main() -> casbin_redis_watcher::Result<()> {
+async fn main() -> redis_watcher::Result<()> {
     let options = WatcherOptions::default()
         .with_channel("/casbin".to_string())
         .with_ignore_self(true);
@@ -103,7 +105,7 @@ async fn main() -> casbin_redis_watcher::Result<()> {
     let enforcer = Arc::new(Mutex::new(enforcer));
 
     // Use default callback that automatically reloads policies
-    let callback = casbin_redis_watcher::default_update_callback(enforcer.clone());
+    let callback = redis_watcher::default_update_callback(enforcer.clone());
     watcher.set_update_callback(move |msg| callback(msg)).await?;
 
     // Start listening for policy changes
@@ -121,7 +123,7 @@ async fn main() -> casbin_redis_watcher::Result<()> {
 ### WatcherOptions
 
 ```rust
-use casbin_redis_watcher::WatcherOptions;
+use redis_watcher::WatcherOptions;
 
 let options = WatcherOptions::default()
     .with_channel("/casbin-policy-updates".to_string())  // Redis channel name

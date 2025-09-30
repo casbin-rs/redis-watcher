@@ -42,8 +42,9 @@ mod tests {
 
     // Helper function to get Redis cluster URLs from environment or use default
     fn get_redis_cluster_urls() -> String {
-        std::env::var("REDIS_CLUSTER_URLS")
-            .unwrap_or_else(|_| "127.0.0.1:7000,127.0.0.1:7001,127.0.0.1:7002".to_string())
+        std::env::var("REDIS_CLUSTER_URLS").unwrap_or_else(|_| {
+            "redis://127.0.0.1:7000,redis://127.0.0.1:7001,redis://127.0.0.1:7002".to_string()
+        })
     }
 
     async fn init_watcher_with_options(

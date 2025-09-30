@@ -14,19 +14,16 @@
 
 //! Redis Watcher for Casbin-RS
 //!
-//! This library provides Redis-based policy change notifications for Casbin-RS.
-//! It's designed to be compatible with the Go version of casbin-redis-watcher.
-//!
 //! # Examples
 //!
 //! ```rust,no_run
-//! use casbin_redis_watcher::{RedisWatcher, WatcherOptions, Watcher};
+//! use redis_watcher::{RedisWatcher, WatcherOptions, Watcher};
 //! use casbin::prelude::*;
 //! use std::sync::Arc;
 //! use tokio::sync::Mutex;
 //!
 //! #[tokio::main]
-//! async fn main() -> casbin_redis_watcher::Result<()> {
+//! async fn main() -> redis_watcher::Result<()> {
 //!     let options = WatcherOptions::default()
 //!         .with_channel("/casbin-policy-updates".to_string())
 //!         .with_ignore_self(true);
@@ -36,7 +33,7 @@
 //!     let enforcer = Enforcer::new("examples/rbac_model.conf", "examples/rbac_policy.csv").await.unwrap();
 //!     let enforcer = Arc::new(Mutex::new(enforcer));
 //!     
-//!     let callback = casbin_redis_watcher::default_update_callback(enforcer.clone());
+//!     let callback = redis_watcher::default_update_callback(enforcer.clone());
 //!     watcher.set_update_callback(move |msg| callback(msg)).await?;
 //!     
 //!     // Update policy

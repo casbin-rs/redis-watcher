@@ -1,0 +1,95 @@
+name: Code Coverage
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  cover:
+    name: Auto Codecov Coverage
+    runs-on: ubuntu-latest
+
+    services:
+      redis:
+        image: redis
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: |
+          rustup set profile minimal
+          rustup update --no-self-update stable
+          rustup default stable
+
+      - name: Install Redis server and tools for cluster setup
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y redis-server redis-tools
+
+      - name: Setup Redis Cluster
+        run: |
+          # Create Redis cluster configuration
+          mkdir -p /tmp/redis-cluster
+          for port in 7000 7001 7002 7003 7004 7005; do
+            mkdir -p /tmp/redis-cluster/$port
+            cat > /tmp/redis-cluster/$port/redis.conf << EOF
+          port $port
+          cluster-enabled yes
+          cluster-config-file nodes-$port.conf
+          cluster-node-timeout 5000
+          appendonly yes
+          bind 0.0.0.0
+          protected-mode no
+          EOF
+          done
+          
+          # Start Redis cluster nodes
+          for port in 7000 7001 7002 7003 7004 7005; do
+            redis-server /tmp/redis-cluster/$port/redis.conf --daemonize yes --dir /tmp/redis-cluster/$port/
+          done
+          
+          # Wait for nodes to start
+          sleep 15
+          
+          # Verify nodes are running
+          for port in 7000 7001 7002 7003 7004 7005; do
+            redis-cli -p $port ping
+          done
+          
+          # Create cluster
+          echo "yes" | redis-cli --cluster create \
+            127.0.0.1:7000 127.0.0.1:7001 127.0.0.1:7002 \
+            127.0.0.1:7003 127.0.0.1:7004 127.0.0.1:7005 \
+            --cluster-replicas 1
+          
+          # Verify cluster is working
+          redis-cli -c -p 7000 cluster nodes
+
+      - name: Run cargo-tarpaulin
+        run: |
+          # Set environment variables for Redis services
+          export REDIS_AVAILABLE=true
+          export REDIS_URL=redis://127.0.0.1:6379
+          export REDIS_CLUSTER_AVAILABLE=true
+          export REDIS_CLUSTER_URLS=redis://127.0.0.1:7000,redis://127.0.0.1:7001,redis://127.0.0.1:7002
+          
+          cargo install cargo-tarpaulin
+          cargo tarpaulin --out xml
+
+      - name: Upload to codecov.io
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{secrets.CODECOV_TOKEN}}

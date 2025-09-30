@@ -1,5 +1,5 @@
 [package]
-name = "casbin-redis-watcher"
+name = "redis-watcher"
 version = "0.1.0"
 edition = "2021"
 description = "Redis watcher for Casbin-RS"
@@ -7,8 +7,18 @@ license = "Apache-2.0"
 authors = ["Casbin Contributors"]
 homepage = "https://github.com/casbin-rs/redis-watcher"
 repository = "https://github.com/casbin-rs/redis-watcher"
+documentation = "https://docs.rs/redis-watcher"
+readme = "README.md"
 keywords = ["casbin", "redis", "watcher", "authorization", "access-control"]
 categories = ["authentication", "authorization", "database"]
+include = ["src/**/*", "examples/**/*", "README.md", "LICENSE", "Cargo.toml"]
+exclude = [
+    "target/**/*",
+    ".github/**/*",
+    ".git/**/*",
+    ".gitignore",
+    "Cargo.lock",
+]
 
 [dependencies]
 casbin = "2.2"
