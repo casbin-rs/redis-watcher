@@ -7,7 +7,7 @@ on:
 
 jobs:
   release:
-    if: ${{ github.repository == 'casbin-rs/redis-watcher' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'}}
+    if: ${{ github.repository == 'casbin-rs/redis-watcher' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'master'}}
     uses: casbin-rs/semantic-release-action-rust/.github/workflows/release-library.yml@master
     secrets:
       cargo-registry-token: ${{ secrets.CARGO_TOKEN }}
