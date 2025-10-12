@@ -1,3 +1,15 @@
+# [1.0.0](https://github.com/casbin-rs/redis-watcher/compare/v0.2.0...v1.0.0) (2025-10-12)
+
+
+### Features
+
+* v1.0.0 release ([#12](https://github.com/casbin-rs/redis-watcher/issues/12)) ([1c5ee33](https://github.com/casbin-rs/redis-watcher/commit/1c5ee339aec73ca19b139d485a0a5066ebbf0e6d))
+
+
+### BREAKING CHANGES
+
+* feat: v1.0.0 release
+
 # [0.2.0](https://github.com/casbin-rs/redis-watcher/compare/v0.1.0...v0.2.0) (2025-10-12)
 
 
